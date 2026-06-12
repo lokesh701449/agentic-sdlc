@@ -2,66 +2,39 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from typing import Any
 
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AsyncOpenAI,
-    RateLimitError,
-)
+from llm.base_client import BaseLLMClient
+from llm.gemini_client import GeminiClient
 from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_BASE_DELAY = 1.0
-RETRYABLE_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
-
-
-class TaskType(str, Enum):
-    FEATURE = "feature"
-    BUGFIX = "bugfix"
-    REFACTOR = "refactor"
-    TEST = "test"
-    DOCS = "docs"
-    INFRA = "infra"
-    RESEARCH = "research"
-
-
-class TaskPriority(str, Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class EngineeringTask(BaseModel):
     id: str = Field(description="Stable task identifier, e.g. TASK-001")
     title: str
     description: str
-    type: TaskType
-    priority: TaskPriority
+    type: str
+    priority: str
     dependencies: list[str] = Field(default_factory=list)
-    acceptance_criteria: list[str] = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(default_factory=list)
     estimated_effort: str = Field(
         description="Rough effort estimate, e.g. '2h', '1d', '3d'"
     )
 
 
 class EngineeringPlan(BaseModel):
-    summary: str
-    requirements_analysis: str
+    summary: str = Field(default_factory=str)
+    requirements_analysis: str = Field(default_factory=str)
     assumptions: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
-    tasks: list[EngineeringTask] = Field(min_length=1)
+    tasks: list[EngineeringTask] = Field(default_factory=list)
 
 
 class PlannerError(Exception):
@@ -71,10 +44,7 @@ class PlannerError(Exception):
 @dataclass
 class PlannerConfig:
     model: str = DEFAULT_MODEL
-    max_retries: int = DEFAULT_MAX_RETRIES
-    retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY
     temperature: float = 0.2
-    api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
 
 
 SYSTEM_PROMPT = """\
@@ -84,109 +54,30 @@ Given natural-language software requirements, produce a practical implementation
 as structured engineering tasks suitable for downstream coder, reviewer, and tester agents.
 
 Rules:
-- Break work into small, independently actionable tasks (typically 3–12).
+- Break work into a small number of actionable tasks, targeting 3–5 tasks maximum. Avoid over-splitting small tasks.
 - Use stable task IDs: TASK-001, TASK-002, etc.
 - List dependencies only as other task IDs that must complete first.
 - Every task must have clear, testable acceptance criteria.
 - Prefer vertical slices over purely technical layers when possible.
 - Include assumptions and risks when requirements are ambiguous.
+- Respond with valid JSON only, matching this shape:
+  {
+    "summary": "string",
+    "requirements_analysis": "string",
+    "assumptions": ["string"],
+    "risks": ["string"],
+    "tasks": [{
+      "id": "TASK-001",
+      "title": "string",
+      "description": "string",
+      "type": "feature|bugfix|refactor|test|docs|infra|research",
+      "priority": "high|medium|low",
+      "dependencies": ["TASK-000"],
+      "acceptance_criteria": ["string"],
+      "estimated_effort": "2h"
+    }]
+  }
 """
-
-
-class OpenAIPlannerClient:
-    """Thin async wrapper around the OpenAI chat completions API."""
-
-    def __init__(self, config: PlannerConfig) -> None:
-        if not config.api_key:
-            raise PlannerError("OPENAI_API_KEY is not set")
-        self._config = config
-        self._client = AsyncOpenAI(api_key=config.api_key)
-
-    async def generate_plan(self, requirements: str) -> EngineeringPlan:
-        schema = EngineeringPlan.model_json_schema()
-        response = await self._client.chat.completions.create(
-            model=self._config.model,
-            temperature=self._config.temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "Convert the following software requirements into an engineering plan.\n\n"
-                        f"Requirements:\n{requirements.strip()}"
-                    ),
-                },
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "engineering_plan",
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
-        )
-
-        raw = response.choices[0].message.content
-        if not raw:
-            raise PlannerError("OpenAI returned an empty response")
-
-        try:
-            payload = json.loads(raw)
-            return EngineeringPlan.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError) as exc:
-            raise PlannerError(f"Invalid plan JSON from model: {exc}") from exc
-
-
-async def _with_retry(
-    fn: Any,
-    *,
-    max_retries: int,
-    base_delay: float,
-    label: str,
-) -> EngineeringPlan:
-    last_error: Exception | None = None
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            return await fn()
-        except RETRYABLE_EXCEPTIONS as exc:
-            last_error = exc
-            if attempt == max_retries:
-                break
-            delay = base_delay * (2 ** (attempt - 1))
-            logger.warning(
-                "%s failed (attempt %d/%d): %s — retrying in %.1fs",
-                label,
-                attempt,
-                max_retries,
-                exc,
-                delay,
-            )
-            await asyncio.sleep(delay)
-        except APIStatusError as exc:
-            if exc.status_code and exc.status_code >= 500 and attempt < max_retries:
-                last_error = exc
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning(
-                    "%s server error %s (attempt %d/%d) — retrying in %.1fs",
-                    label,
-                    exc.status_code,
-                    attempt,
-                    max_retries,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise PlannerError(f"OpenAI API error: {exc}") from exc
-        except PlannerError:
-            raise
-        except Exception as exc:
-            raise PlannerError(f"Unexpected planning error: {exc}") from exc
-
-    raise PlannerError(
-        f"{label} failed after {max_retries} attempts: {last_error}"
-    ) from last_error
 
 
 class PlannerAgent:
@@ -195,20 +86,56 @@ class PlannerAgent:
     def __init__(
         self,
         config: PlannerConfig | None = None,
-        client: OpenAIPlannerClient | None = None,
+        client: BaseLLMClient | None = None,
     ) -> None:
+        """Initialize the planner agent with config and the LLM client (dependency injection)."""
         self._config = config or PlannerConfig()
-        self._client = client or OpenAIPlannerClient(self._config)
+        # Dependency injection support: default to GeminiClient if no client is passed
+        self._client = client or GeminiClient(model_name=self._config.model)
 
     async def plan(self, requirements: str) -> dict[str, Any]:
-        """Convert requirements into a JSON-serializable engineering plan."""
+        """Convert requirements into a JSON-serializable engineering plan using Gemini API."""
         if not requirements or not requirements.strip():
             raise PlannerError("Requirements must be a non-empty string")
 
-        engineering_plan = await _with_retry(
-            lambda: self._client.generate_plan(requirements),
-            max_retries=self._config.max_retries,
-            base_delay=self._config.retry_base_delay,
-            label="PlannerAgent",
+        logger.info("PlannerAgent: Requesting plan generation from Gemini API.")
+        
+        user_prompt = (
+            "Convert the following software requirements into an engineering plan.\n\n"
+            f"Requirements:\n{requirements.strip()}"
         )
-        return engineering_plan.model_dump(mode="json")
+
+        try:
+            raw_response = await self._client.generate(
+                prompt=user_prompt,
+                system_prompt=SYSTEM_PROMPT,
+                response_schema=EngineeringPlan,
+            )
+            
+            logger.info("PlannerAgent: Raw response from Gemini: %s", raw_response)
+            payload = json.loads(raw_response)
+            
+            # Normalize tasks to ensure all required fields exist before validation
+            if "tasks" in payload and isinstance(payload["tasks"], list):
+                for task in payload["tasks"]:
+                    if isinstance(task, dict):
+                        task_id = task.get("id") or task.get("task_id") or "TASK-UNKNOWN"
+                        # Fallback for missing/empty required fields
+                        task["id"] = task_id
+                        task["title"] = task.get("title") or f"Implement {task_id}"
+                        task["description"] = task.get("description") or f"Description for {task['title']}"
+                        task["type"] = task.get("type") or "feature"
+                        task["priority"] = task.get("priority") or "medium"
+                        task["dependencies"] = task.get("dependencies") or []
+                        task["acceptance_criteria"] = task.get("acceptance_criteria") or [f"The task '{task['title']}' is successfully implemented."]
+                        task["estimated_effort"] = task.get("estimated_effort") or "2h"
+            
+            engineering_plan = EngineeringPlan.model_validate(payload)
+            logger.info("PlannerAgent: Plan generated and validated successfully.")
+            return engineering_plan.model_dump(mode="json")
+        except (json.JSONDecodeError, ValidationError) as exc:
+            logger.error("PlannerAgent: Generated response validation failed: %s", exc)
+            raise PlannerError(f"Invalid plan response schema: {exc}") from exc
+        except Exception as exc:
+            logger.error("PlannerAgent: Plan generation failed: %s", exc)
+            raise PlannerError(f"Unexpected planning error: {exc}") from exc

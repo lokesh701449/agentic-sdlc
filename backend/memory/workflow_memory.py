@@ -79,6 +79,45 @@ class WorkflowMemoryManager:
                         FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
                     )
                 """)
+                
+                # test_results table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS test_results (
+                        workflow_id TEXT NOT NULL,
+                        test_name TEXT NOT NULL,
+                        execution_time REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        error_message TEXT,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
+                    )
+                """)
+                
+                # review_issues table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS review_issues (
+                        workflow_id TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        severity TEXT NOT NULL,
+                        issue_description TEXT NOT NULL,
+                        suggested_fix TEXT,
+                        correction_attempt INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
+                    )
+                """)
+
+                # monitoring_metrics table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS monitoring_metrics (
+                        workflow_id TEXT NOT NULL,
+                        agent_name TEXT NOT NULL,
+                        execution_duration REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
+                    )
+                """)
                 conn.commit()
                 logger.info("DB_OP: SQLite database tables initialized successfully.")
         except Exception as exc:
@@ -322,3 +361,234 @@ class WorkflowMemoryManager:
         except Exception as exc:
             logger.error("DB_OP: Failed to save generated file for task %s: %s", task_id, exc)
             raise
+
+    def save_test_result(
+        self,
+        workflow_id: str,
+        test_name: str,
+        execution_time: float,
+        status: str,
+        error_message: str | None = None,
+    ) -> None:
+        """Save a test execution result to the database."""
+        logger.info(
+            "DB_OP: Saving test result for test '%s' in workflow %s (status: %s, time: %s)",
+            test_name,
+            workflow_id,
+            status,
+            execution_time,
+        )
+        now = datetime.utcnow().isoformat()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO test_results (
+                        workflow_id, test_name, execution_time, status, error_message, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_id,
+                        test_name,
+                        execution_time,
+                        status,
+                        error_message,
+                        now,
+                    ),
+                )
+                conn.commit()
+                logger.info("DB_OP: Test result for '%s' saved successfully.", test_name)
+        except Exception as exc:
+            logger.error("DB_OP: Failed to save test result for test '%s': %s", test_name, exc)
+            raise
+
+    def save_review_issue(
+        self,
+        workflow_id: str,
+        file_name: str,
+        severity: str,
+        issue_description: str,
+        suggested_fix: str,
+        correction_attempt: int,
+    ) -> None:
+        """Save a review issue to the database."""
+        logger.info(
+            "DB_OP: Saving review issue for file %s (severity: %s, attempt: %d)",
+            file_name,
+            severity,
+            correction_attempt,
+        )
+        now = datetime.utcnow().isoformat()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO review_issues (
+                        workflow_id, file_name, severity, issue_description, suggested_fix, correction_attempt, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_id,
+                        file_name,
+                        severity,
+                        issue_description,
+                        suggested_fix,
+                        correction_attempt,
+                        now,
+                    ),
+                )
+                conn.commit()
+                logger.info("DB_OP: Review issue for '%s' saved successfully.", file_name)
+        except Exception as exc:
+            logger.error("DB_OP: Failed to save review issue for file '%s': %s", file_name, exc)
+            raise
+
+    def save_monitoring_metric(
+        self,
+        workflow_id: str,
+        agent_name: str,
+        execution_duration: float,
+        status: str,
+    ) -> None:
+        """Save a monitoring metric to the database."""
+        logger.info(
+            "DB_OP: Saving monitoring metric for agent '%s' in workflow %s (status: %s, duration: %s)",
+            agent_name,
+            workflow_id,
+            status,
+            execution_duration,
+        )
+        now = datetime.utcnow().isoformat()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO monitoring_metrics (
+                        workflow_id, agent_name, execution_duration, status, timestamp
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_id,
+                        agent_name,
+                        execution_duration,
+                        status,
+                        now,
+                    ),
+                )
+                conn.commit()
+                logger.info("DB_OP: Monitoring metric for agent '%s' saved successfully.", agent_name)
+        except Exception as exc:
+            logger.error("DB_OP: Failed to save monitoring metric for agent '%s': %s", agent_name, exc)
+            raise
+
+    def get_workflows(self) -> list[dict[str, Any]]:
+        """Retrieve all workflows ordered by creation date descending."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM workflows ORDER BY created_at DESC")
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve workflows: %s", exc)
+            return []
+
+    def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        """Retrieve a specific workflow by id."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM workflows WHERE workflow_id = ?", (workflow_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve workflow %s: %s", workflow_id, exc)
+            return None
+
+    def get_tasks(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Retrieve all tasks associated with a workflow."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM tasks WHERE workflow_id = ?", (workflow_id,))
+                rows = cursor.fetchall()
+                tasks = []
+                for row in rows:
+                    task_dict = dict(row)
+                    try:
+                        task_dict["dependencies"] = json.loads(row["dependencies"]) if row["dependencies"] else []
+                    except Exception:
+                        task_dict["dependencies"] = []
+                    try:
+                        task_dict["acceptance_criteria"] = json.loads(row["acceptance_criteria"]) if row["acceptance_criteria"] else []
+                    except Exception:
+                        task_dict["acceptance_criteria"] = []
+                    tasks.append(task_dict)
+                return tasks
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve tasks for workflow %s: %s", workflow_id, exc)
+            return []
+
+    def get_test_results(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Retrieve test results for a workflow."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM test_results WHERE workflow_id = ?", (workflow_id,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve test results for workflow %s: %s", workflow_id, exc)
+            return []
+
+    def get_review_issues(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Retrieve review issues for a workflow."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM review_issues WHERE workflow_id = ?", (workflow_id,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve review issues for workflow %s: %s", workflow_id, exc)
+            return []
+
+    def get_monitoring_metrics(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Retrieve monitoring metrics for a workflow."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM monitoring_metrics WHERE workflow_id = ?", (workflow_id,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve monitoring metrics for workflow %s: %s", workflow_id, exc)
+            return []
+
+    def get_generated_files(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Retrieve files that were successfully generated in the workflow (completed tasks with file_path)."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT file_path, MAX(generation_time_seconds) as generation_time_seconds, status 
+                    FROM tasks 
+                    WHERE workflow_id = ? AND status = 'completed' AND file_path IS NOT NULL AND file_path != ''
+                    GROUP BY file_path
+                    """,
+                    (workflow_id,)
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as exc:
+            logger.error("DB_OP: Failed to retrieve generated files for workflow %s: %s", workflow_id, exc)
+            return []
+
+

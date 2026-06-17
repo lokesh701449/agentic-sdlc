@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
 
 
 class EngineeringTask(BaseModel):
@@ -38,7 +38,7 @@ class EngineeringPlan(BaseModel):
 
 
 class PlannerError(Exception):
-    """Raised when planning fails after retries or validation."""
+    """Raised when planning farunils after retries or validation."""
 
 
 @dataclass
@@ -59,6 +59,7 @@ Rules:
 - List dependencies only as other task IDs that must complete first.
 - Every task must have clear, testable acceptance criteria.
 - Prefer vertical slices over purely technical layers when possible.
+- Critical: Each task MUST represent the implementation of exactly one target file (e.g., database.py, models.py, auth.py, routes.py). Do not group multiple file creations/modifications into a single task, as the downstream coder agent can only output one file per task.
 - Include assumptions and risks when requirements are ambiguous.
 - Respond with valid JSON only, matching this shape:
   {
@@ -109,7 +110,7 @@ class PlannerAgent:
             raw_response = await self._client.generate(
                 prompt=user_prompt,
                 system_prompt=SYSTEM_PROMPT,
-                response_schema=EngineeringPlan,
+                response_schema=None,
             )
             
             logger.info("PlannerAgent: Raw response from Gemini: %s", raw_response)

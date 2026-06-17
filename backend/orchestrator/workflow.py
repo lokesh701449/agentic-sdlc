@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("WorkflowVerificationRunner")
 
-# 1. Clean and portable backend path resolution
+
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
@@ -58,15 +58,11 @@ async def run_verification() -> dict:
     orchestrator = WorkflowOrchestrator(memory=memory)
 
     requirement = (
-    "Build a FastAPI task management backend system with JWT authentication. "
-    "Generate these files only: "
-    "1) models.py for SQLite task/user models, "
-    "2) auth.py for JWT authentication and password hashing, "
-    "3) routes.py for CRUD task APIs, "
-    "4) database.py for SQLite connection handling, "
-    "5) test_routes.py for unit tests. "
-    "Use FastAPI, SQLite, bcrypt, and python-jose. "
-    "Do not generate documentation or frontend code."
+    "Build a Proof-of-Concept full-stack application using Next.js frontend and Node.js backend. "
+    "The system should generate a modern responsive UI, authentication APIs, database models, "
+    "REST endpoints, backend services, and modular project structure. "
+    "Use AI agents for planning, code generation, testing, review, monitoring, "
+    "runtime validation, workflow orchestration, and human approval workflows."
 )
 
     logger.info("VERIFICATION: Invoking orchestrator with requirement: '%s'", requirement)

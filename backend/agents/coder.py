@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
 
 
 class CodingResult(BaseModel):
@@ -57,6 +57,7 @@ Rules:
 - Critical: Do NOT import local files or modules (like `app`, `config`, etc.) that are not standard Python libraries or standard third-party packages (like fastapi, jose, bcrypt, passlib, sqlite3, or httpx), unless they are explicitly defined in the task description or are sibling modules.
 - Critical: When creating unit tests, ensure that you import functions from the exact filename where they are defined, matching standard Python module namespaces.
 - Critical: In Python, ensure that any lambda functions are written entirely on a single line. Do not split lambda declarations across lines to avoid syntax errors.
+- Critical: Do NOT use relative imports (e.g. `from .database import ...`). Always use absolute imports for sibling modules (e.g. `from database import ...` or `import database`), as the module is validated by a dynamic import runner.
 - Respond with valid JSON only, matching this shape:
   {
     "filename": "string",
@@ -206,6 +207,9 @@ class CodingAgent:
                 cleaned_response = "\n".join(lines).strip()
 
             payload = json.loads(cleaned_response)
+            if isinstance(payload, list) and len(payload) > 0:
+                logger.warning("CodingAgent: Received list payload instead of single dict. Extracting first item.")
+                payload = payload[0]
             coding_result = CodingResult.model_validate(payload)
             
             filename = coding_result.filename
